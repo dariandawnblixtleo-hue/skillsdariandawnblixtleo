@@ -10,7 +10,6 @@ Usage (from repo root):
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -26,9 +25,11 @@ from common import (  # noqa: E402
     TOPIC_FILE_ORDER,
     TOPIC_HEADINGS,
     CHAIN_FILE_CONFIG,
+    EXCLUDED_PARAM_NAMES,
     classify_endpoint,
     chain_file_info,
     format_index_line,
+    first_paragraph,
 )
 
 # ---------------------------------------------------------------------------
@@ -47,16 +48,6 @@ STATS_SERVICE_SWAGGER_DIR = Path("blockscout-analysis/.build/swaggers/stats-serv
 # Stats.md section names.
 STATS_CHAIN_SECTION = "Chain Statistics"
 STATS_SERVICE_SECTION = "Stats Service"
-
-# Path parameter substitution heuristics for curl examples.
-# Each entry: ([keyword, ...], replacement_value). First match wins.
-PATH_PARAM_SUBSTITUTIONS: list[tuple[list[str], str]] = [
-    (["address", "hash"], "0xabc..."),
-    (["block", "number"], "1000000"),
-    (["token_id"],        "1"),
-    (["batch"],           "12345"),
-]
-PATH_PARAM_DEFAULT = "value"
 
 # ---------------------------------------------------------------------------
 # Loading helpers
@@ -149,8 +140,21 @@ def classify_records(
         if rec.get("method") != "GET":
             continue
         endpoint = rec["endpoint"]
-        # Skip CSV export endpoints and the CSV configuration endpoint.
-        if endpoint.endswith("/csv") or endpoint == "/v2/config/csv-export":
+        # Skip CSV export endpoints.
+        if endpoint.endswith("/csv"):
+            continue
+        # Skip all configuration endpoints (backend/indexer/public-metrics/
+        # csv-export config/chain-specific config such as /v2/config/celo).
+        # These describe the Blockscout instance's own configuration, not
+        # on-chain data, so they are not useful for agent queries.
+        if endpoint == "/v2/config" or endpoint.startswith("/v2/config/"):
+            continue
+        # Skip async CSV export job endpoints (bulk export, not agent queries).
+        if endpoint == "/v2/csv-exports" or endpoint.startswith("/v2/csv-exports/"):
+            continue
+        # Skip legacy Etherscan-compat endpoints. The curated JSON-RPC patch
+        # (rpc-api-patch-spec.md) is the canonical agent-facing form of these.
+        if endpoint.startswith("/legacy/"):
             continue
         sf = rec["swagger_file"]
         transformed = "/api" + endpoint
@@ -258,6 +262,9 @@ def extract_parameters(
         if param_in not in ("path", "query"):
             continue
         name = p.get("name", "")
+        if name in EXCLUDED_PARAM_NAMES:
+            # Auth/access params (e.g. apikey, key) — see common.EXCLUDED_PARAM_NAMES.
+            continue
         type_str = _get_param_type(p)
         required = True if param_in == "path" else bool(p.get("required", False))
         description = p.get("description", "") or ""
@@ -269,34 +276,6 @@ def extract_parameters(
             "description": description,
         })
     return result
-
-# ---------------------------------------------------------------------------
-# Example request generation
-# ---------------------------------------------------------------------------
-
-def _substitute_path_param(name: str) -> str:
-    """Return a realistic placeholder for a path parameter."""
-    name_lower = name.lower()
-    for keywords, value in PATH_PARAM_SUBSTITUTIONS:
-        if any(kw in name_lower for kw in keywords):
-            return value
-    return PATH_PARAM_DEFAULT
-
-
-def _needs_example(params: Optional[list[dict]]) -> bool:
-    """True if any parameter has type 'object' or 'array'."""
-    if not params:
-        return False
-    return any(p["type_str"] in ("object", "array") for p in params)
-
-
-def _build_curl(transformed_path: str) -> str:
-    """Build a curl example with {base_url} placeholder, substituting path params."""
-    def replace_param(m: re.Match) -> str:
-        return _substitute_path_param(m.group(1))
-
-    path = re.sub(r"\{([^}]+)\}", replace_param, transformed_path)
-    return f'curl "{{base_url}}{path}"'
 
 # ---------------------------------------------------------------------------
 # Markdown rendering
@@ -336,17 +315,6 @@ def _render_endpoint_entry(record: dict, params: Optional[list[dict]]) -> str:
         table,
     ]
 
-    if _needs_example(params):
-        curl = _build_curl(path)
-        lines += [
-            "",
-            "- **Example Request**",
-            "",
-            "  ```bash",
-            f"  {curl}",
-            "  ```",
-        ]
-
     lines.append("")
     return "\n".join(lines)
 
@@ -382,7 +350,7 @@ def _render_index_file(
         "Use this index to find available endpoints for the `direct_api_call` Blockscout MCP tool. Follow a two-step discovery process:",
         "",
         "1. **Find the endpoint below** — locate it by name or category in this index.",
-        "2. **Read the linked detail file** — follow the section link (e.g., [Addresses](blockscout-api/addresses.md)) to get full parameter types, descriptions, and examples for use with `direct_api_call`.",
+        "2. **Read the linked detail file** — follow the section link (e.g., [Addresses](blockscout-api/addresses.md)) to get full parameter types and descriptions for use with `direct_api_call`.",
     ]
 
     def _add_section(fname: str) -> None:
@@ -397,7 +365,9 @@ def _render_index_file(
             lines.append("")
         records = _get_index_records(fname, classified)
         for rec in records:
-            desc = rec.get("_description", "")
+            # Index lines carry only the first paragraph; the detail file keeps
+            # the full description (see _render_endpoint_entry).
+            desc = first_paragraph(rec.get("_description", ""))
             path = rec["transformed_path"]
             lines.append(format_index_line(path, desc))
 

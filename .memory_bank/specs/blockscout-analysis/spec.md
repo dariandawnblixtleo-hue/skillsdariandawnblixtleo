@@ -10,7 +10,7 @@ Create a modular AI agent skill for two equally important goals: (1) **blockchai
 
 - **MCP endpoint**: `https://mcp.blockscout.com/mcp` (native MCP protocol)
 - **REST API**: `https://mcp.blockscout.com/v1/{tool_name}?params` (HTTP GET)
-- **Multichain**: The server is multichain; almost all tools accept a `chain_id` parameter to target a specific chain (use `get_chains_list` to discover supported chains).
+- **Multichain**: The server is multichain; almost all tools accept a `chain_id` parameter to target a specific chain. Use `get_chains_list` to discover supported chains, always passing its `query` parameter — a case-insensitive substring match by chain name, ecosystem, or native currency — so the call returns only the relevant chains instead of the full registry; fall back to a no-argument call only when a query returns no matches.
 - **16 tools**: unlock_blockchain_analysis, get_chains_list, get_address_info, get_address_by_ens_name, get_tokens_by_address, nft_tokens_by_address, get_transactions_by_address, get_token_transfers_by_address, get_block_info, get_block_number, get_transaction_info, get_contract_abi, inspect_contract_code, read_contract, lookup_token_by_symbol, direct_api_call
 - **Responses**: LLM-friendly (pre-filtered, enriched), except for `direct_api_call`, which proxies raw Blockscout API responses.
 - **`direct_api_call` response size limit**: The MCP server enforces a default response size limit (100,000 characters) on `direct_api_call` responses. When exceeded, a 413 error is returned. Native MCP calls strictly enforce this limit. REST API callers can bypass it by including the `X-Blockscout-Allow-Large-Response: true` HTTP header — but scripts using this bypass must still apply [response transformation](#response-transformation) before passing output to the LLM.
@@ -26,7 +26,7 @@ Create a modular AI agent skill for two equally important goals: (1) **blockchai
 
 #### MCP tool documentation and discovery
 
-- **When MCP is configured**: If the Blockscout MCP server is configured (e.g., `https://mcp.blockscout.com/mcp`), tool names and descriptions are already supplied in the agent’s context by the MCP client; the agent may still use the API reference for parameter details and examples.
+- **When MCP is configured**: If the Blockscout MCP server is configured (e.g., `https://mcp.blockscout.com/mcp`), tool names and descriptions are already supplied in the agent’s context by the MCP client; the agent may still use the API reference for parameter details.
 - **When MCP is not configured**: If the MCP server is not configured, the agent can discover tools and their schemas via the REST list endpoint: `GET https://mcp.blockscout.com/v1/tools`. The skill must instruct the agent to use this URL when tool descriptions are otherwise unavailable.
 
 #### Pagination (MCP): opaque cursor and simplified model
@@ -42,7 +42,7 @@ MCP pagination is **simplified** compared to the raw Blockscout API so that agen
 
 #### Chainscout
 
-This is the Blockscout chain registry. It is a separate service from any individual Blockscout instance and is accessed via direct HTTP requests (e.g., WebFetch or curl)—**not** via the `direct_api_call` MCP tool, which proxies to a specific Blockscout instance.
+This is the Blockscout chain registry. It is a separate service from any individual Blockscout instance and is accessed via direct HTTP requests (e.g., WebFetch or curl)—**not** via the `direct_api_call` MCP tool, which does not proxy calls to the Chainscout service.
 
 The primary purpose of Chainscout access is to resolve a chain ID to its Blockscout explorer URL. Chain IDs must first be obtained from the `get_chains_list` MCP tool, which provides the authoritative list of supported chains with their IDs.
 
@@ -129,6 +129,7 @@ metadata: {"author":"blockscout.com","version":"<current version>","github":"htt
 ### MCP access strategy
 
 - Scripts use the MCP REST API (`mcp.blockscout.com/v1/`) via HTTP
+- **`direct_api_call` query-string encoding**: The skill must document that, over the REST API, `direct_api_call`'s nested `query_params` object is encoded using bracket syntax in the query string (`query_params[key]=value`), with at least one concrete example. Scope this to GET/query-string usage only — the reference files contain no POST endpoints, so the skill does not document the POST/JSON-body form.
 - **User-Agent requirement**: Every HTTP request to the MCP REST API must include the header `User-Agent: Blockscout-SkillGuidedScript/<skill-version>` (where `<skill-version>` is the value from `SKILL.md` frontmatter `metadata.version`). The CDN in front of the MCP REST API rejects requests without a recognized User-Agent with HTTP 403. Because standard-library HTTP clients (e.g., Python `urllib`) send a generic User-Agent that is blocked, the skill must explicitly instruct the agent to set this header in every script. This avoids the recurring failure pattern where the agent writes a script, gets a 403, and then installs a third-party HTTP library to work around it.
 - For interactive tasks better suited to native MCP tool calls (contract analysis, `read_contract`, iterative investigation), the skill instructs the agent to ensure the native MCP server is available (see [MCP server availability](#mcp-server-availability) below)
 - The choice between script-based HTTP calls and direct MCP tool calls is governed by the execution strategy (see [Execution strategy](#execution-strategy) below)
@@ -378,7 +379,7 @@ The skill must describe a workflow that guides the agent through starting and co
 
 - Determine which blockchain the user is asking about from the context of the user's query.
 - Default to chain ID `1` (Ethereum Mainnet) when the query does not specify a chain or clearly refers to Ethereum.
-- Use the `get_chains_list` MCP tool to validate the chain ID. When the Blockscout instance URL is needed (e.g., for constructing explorer links), use Chainscout to resolve the chain ID to its Blockscout instance URL (see [Chainscout](#chainscout)).
+- Use the `get_chains_list(query="...")` MCP tool to validate the chain ID — pass the chain name or ecosystem the user mentioned (e.g., "Polygon", "Base") so only relevant chains are returned, falling back to a no-argument call only if the query returns no matches. When the Blockscout instance URL is needed (e.g., for constructing explorer links), use Chainscout to resolve the chain ID to its Blockscout instance URL (see [Chainscout](#chainscout)).
 
 ### 2. Choose the execution strategy
 
