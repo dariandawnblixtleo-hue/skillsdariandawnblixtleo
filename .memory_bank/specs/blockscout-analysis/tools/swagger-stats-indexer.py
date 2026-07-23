@@ -51,7 +51,7 @@ def discover_latest_stats_version() -> str:
         if (
             not release.get("draft")
             and not release.get("prerelease")
-            and tag.startswith("stats/")
+            and tag.startswith("stats/v")
         ):
             version = tag[len("stats/v"):]
             print(f"Discovered latest Stats release: {version}")
