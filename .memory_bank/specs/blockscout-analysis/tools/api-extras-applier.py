@@ -419,10 +419,10 @@ def patch_api_file(
         return (f"Patched: blockscout-api/{filename} "
                 f"(added {count} endpoint{'s' if count != 1 else ''} to ### {h3_section})")
 
-    # Section found — determine its extent (ends at next ## heading or EOF)
+    # Section found — determine its extent (ends at next ## or ### heading or EOF)
     section_end = len(lines)
     for i in range(section_line_idx + 1, len(lines)):
-        if re.match(r'^##[^#]', lines[i]):
+        if re.match(r'^#{2,3}[^#]', lines[i]):
             section_end = i
             break
 
